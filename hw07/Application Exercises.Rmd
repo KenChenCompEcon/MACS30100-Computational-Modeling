@@ -1,0 +1,393 @@
+---
+title: "Application Exercises"
+author: "Ken Chen"
+date: "February 24, 2019"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+setwd("D:/Perspectives/Computational Modeling/hw07")
+set.seed(123)
+library(tidyverse)
+library(readr)
+library(ggplot2)
+library(rsample)
+library(margins)
+library(splines)
+library(caret)
+
+gss_train = read_csv("./data/gss_train.csv")
+gss_test = read_csv("./data/gss_test.csv")
+```
+# Application Exercises
+### Egalitarianism and income
+1. Perform polynomial regression to predict egalit_scale using income06. Use 10-fold cross-validation to select the optimal degree $d$ for the polynomial based on the MSE. Make a plot of the resulting polynomial fit to the data, and graph the average marginal effect (AME) of income06 across its potential values. Provide a substantive interpretation of the results.
+
+```{r Q1}
+inc06 = select(.data = gss_train, income06)
+ega = select(.data = gss_train, egalit_scale)
+x_train = cbind(ega, inc06)
+
+mse_lst = rep(0, 16)
+cv = vfold_cv(data = x_train, v = 10)
+for (i in 1:10){
+  splited_set = cv$splits[[i]]
+  train = analysis(splited_set); heldout = assessment(splited_set)
+  y_true = heldout$egalit_scale
+  for (j in 1:16){
+    m = glm(egalit_scale ~ poly(income06, j, raw = TRUE), data = train)
+    pred = predict(m, newdata = heldout)
+    mse = sum((pred - y_true)^2)/length(y_true)
+    mse_lst[j] = mse_lst[j] + mse
+  }
+}
+
+mse_lst = mse_lst/10
+tibble_poly = tibble(Training_MSE = mse_lst, Degree = 1:16)
+tibble_poly %>% 
+  ggplot(aes(x = Degree, y = Training_MSE)) + geom_point() + geom_line()
+```
+
+As we can see from the plot, the optimal degree is 2.
+
+```{r}
+poly_m = lm(egalit_scale ~ income06 + I(income06^2), data = gss_train)
+
+cplot(poly_m, "income06", what='prediction', draw = F) %>% 
+  ggplot(aes(x = xvals)) + 
+  geom_line(aes(y = yvals)) +
+  geom_line(aes(y = upper), linetype = 2) + 
+  geom_line(aes(y = lower), linetype = 2) +
+  geom_rug(data = gss_train, aes(x = income06)) +
+  labs(title = "Egalitarianism Prediction", x = 'Income', y = "Prediction")
+```
+
+```{r}
+cplot(poly_m, "income06", what='effect', draw = F) %>% 
+  ggplot(aes(x = xvals)) + 
+  geom_line(aes(y = yvals)) +
+  geom_line(aes(y = upper), linetype = 2) + 
+  geom_line(aes(y = lower), linetype = 2) +
+  geom_rug(data = gss_train, aes(x = income06)) +
+  labs(title = "Average Marginal Effects of Potential Income Values", x = 'Income', y = "MAE")
+```
+
+2. Fit a step function to predict egalit_scale using income06, and perform 10-fold cross-validation to choose the optimal number of cuts. Make a plot of the fit obtained and interpret the results.
+```{r}
+mse_lst = rep(0, 15)
+for (i in 2:16) {
+  gss_train$inc06_cut = cut_interval(gss_train$income06, i)
+  m = glm(egalit_scale ~ inc06_cut, data = gss_train)
+  mse_lst[i-1] = boot::cv.glm(gss_train, m, K = 10)$delta[1]
+}
+tibble(cut_num = 2:16, mse = mse_lst) %>%
+  ggplot(aes(cut_num, mse)) +
+  geom_line() +
+  geom_vline(xintercept = which.min(mse_lst) + 1, linetype = 3) +
+  labs(title = "Step function regression: Cross-Validation over different cuts", x = "# of cuts", y = "CV MSE")
+```
+
+The optimal number of cuts is 4 according to our cross validation.
+```{r}
+m_opt = lm(egalit_scale ~ cut_interval(income06, 4), data = gss_train)
+
+m_opt %>% prediction %>%
+  ggplot(aes(x = income06)) +
+  geom_line(aes(y = fitted)) +
+  geom_line(aes(y = fitted + 1.96 * se.fitted), linetype = 2) +
+  geom_line(aes(y = fitted - 1.96 * se.fitted), linetype = 2) +
+  geom_rug(data = gss_train, aes(x = income06)) +
+  labs(title = "Step function regression: with 4 cuts", x = "Income", y = "Predicted egalitarianism")
+```
+
+3.Fit a natural regression spline to predict egalit_scale using income06. Use 10-fold cross-validation to select the optimal number of degrees of freedom, and present the results of the optimal model.
+```{r}
+mse_lst = rep(0, 10)
+for (i in 1:10) {
+  m_spline = glm(egalit_scale ~ ns(income06, df = i), data = gss_train)
+  mse_lst[i] = boot::cv.glm(gss_train, m_spline, K = 10)$delta[1]
+}
+tibble(df = 1:10, mse = mse_lst) %>%
+  ggplot(aes(df, mse)) +
+  geom_line() +
+  geom_vline(xintercept = which.min(mse_lst), linetype = 2) +
+  labs(title = "Natural spline regression for income: CV MSE over different # of df", x = "Degrees of freedom", y = "CV MSE")
+```
+
+According to the 10-fold cross validation, the optimal degrees of freedom is 2.
+```{r}
+ns_opt = lm(egalit_scale ~ ns(income06, df = 2), data = gss_train)
+
+ns_opt %>% prediction %>%
+  ggplot(aes(x = income06)) +
+  geom_line(aes(y = fitted)) +
+  geom_line(aes(y = fitted + 1.96 * se.fitted), linetype = 2) +
+  geom_line(aes(y = fitted - 1.96 * se.fitted), linetype = 2) +
+  geom_rug(data = gss_train, aes(x = income06)) +
+  labs(title = "Natural spline regression: with df = 2", x = "Income", y = "Predicted Egalitarianism")
+```
+
+4. Fit a local linear regression model to predict egalit_scale using income06. Use 10-fold cross-validation to select the optimal bandwidth. Interpret the results.
+```{r}
+mse_lst = rep(0, 25)
+cv = vfold_cv(data = x_train, v = 10)
+for (i in 1:10){
+  splited_set = cv$splits[[i]]
+  train = analysis(splited_set); heldout = assessment(splited_set)
+  y_true = heldout$egalit_scale
+  j = 1
+  for (bdw in seq(0.3, 1.5, 0.05)){
+    m = loess(egalit_scale ~ income06, data = train, span = bdw, degree = 1)
+    pred = predict(m, newdata = heldout)
+    mse = sum((pred - y_true)^2)/length(y_true)
+    mse_lst[j] = mse_lst[j] + mse
+    j = j+1
+  }
+}
+
+mse_lst = mse_lst/10
+tibble_poly = tibble(Training_MSE = mse_lst, Bandwidth = seq(0.3, 1.5, 0.05))
+tibble_poly %>% 
+  ggplot(aes(x = Bandwidth, y = Training_MSE)) + 
+  geom_point() + 
+  geom_line()
+```
+
+The optimal bandwidth is 0.85.
+```{r}
+ggplot(gss_train, aes(income06, egalit_scale)) +
+  geom_smooth(method = "loess", span = 0.85, method.args = list(degree = 1)) +
+  labs(title = "Local linear regression: with bandwidth = 0.85", x = "Income", y = "Predicted Egalitarianism")
+```
+
+5. Fit a local polynomial regression model to predict egalit_scale using income06. Use 10-fold crossvalidation to select the optimal bandwidth. Interpret the results.
+```{r}
+mse_lst = rep(0, 20)
+cv = vfold_cv(data = x_train, v = 10)
+for (i in 1:10){
+  splited_set = cv$splits[[i]]
+  train = analysis(splited_set); heldout = assessment(splited_set)
+  y_true = heldout$egalit_scale
+  j = 1
+  for (bdw in seq(0.25, 5, 0.25)){
+    m = loess(egalit_scale ~ income06, data = train, span = bdw, degree = 2)
+    pred = predict(m, newdata = heldout)
+    mse = sum((pred - y_true)^2)/length(y_true)
+    mse_lst[j] = mse_lst[j] + mse
+    j = j+1
+  }
+}
+
+mse_lst = mse_lst/10
+tibble_poly = tibble(Training_MSE = mse_lst, Bandwidth = seq(0.25, 5, 0.25))
+tibble_poly %>% 
+  ggplot(aes(x = Bandwidth, y = Training_MSE)) + 
+  geom_point() + 
+  geom_line()
+```
+
+The optimal bandwidth is 5.
+```{r}
+ggplot(gss_train, aes(income06, egalit_scale)) +
+  geom_smooth(method = "loess", span = 5, method.args = list(degree = 2)) +
+  labs(title = "Local Polynomial Regression: with bandwidth = 5", x = "Income", y = "Predicted Egalitarianism")
+```
+
+### Egalitarianism and everything
+```{r}
+library(glmnet)
+library(pls)
+library(earth)
+library(iml)
+
+```
+1. Estimate the following models using all the available predictors:
+  a. Linear regression
+  b. Elastic net regression
+  c. Principal component regression
+  d. Partial least squares regression
+  e. Multivariate adaptive regression splines (MARS)
+  * Perform appropriate data pre-processing (e.g. standardization) and hyperparameter tuning (e.g. lambda for PCR/PLS, lambda and alpha for elastic        net, degree of interactions and number of retained terms for MARS)
+  * Use 10-fold cross-validation for each model to estimate the model's performance using MSE.
+  
+```{r}
+gss_train = select(gss_train, -inc06_cut)
+# Linear Regression Model
+lr <- train(egalit_scale ~ .,data = gss_train,
+  method = "lm", metric = "RMSE", trControl = trainControl(method = "cv", number = 10), preProcess = c("zv")
+)
+# Elastic Net Regression
+ela.net <- train( egalit_scale ~ ., data = gss_train, method = "glmnet",
+  trControl = trainControl(method = "cv", number = 10), metric = "RMSE", preProcess = c("zv", "center", "scale"), tuneLength = 10
+)
+# PCR
+pcr <- train(egalit_scale ~ ., data = gss_train, method = "pcr", 
+  trControl = trainControl(method = "cv", number = 10), metric = "RMSE", preProcess = c("zv", "center", "scale"), tuneLength = 20
+)
+# PLS
+pls <- train(egalit_scale ~ ., data = gss_train, method = "pls",
+  trControl = trainControl(method = "cv", number = 10), metric = "RMSE", preProcess = c("zv", "center", "scale"), tuneLength = 20
+)
+# MARS
+grid <- expand.grid(degree = 1:3, nprune = seq(2, 100, length.out = 10) %>% floor())
+mars <- train(egalit_scale ~ ., data = gss_train, method = "earth",
+  trControl = trainControl(method = "cv", number = 10), metric = "RMSE", preProcess = c("zv"), tuneGrid = grid
+)
+
+summary(resamples(list(
+  Linear.Regression = lr,
+  Elastic.Net = ela.net,
+  PCR = pcr,
+  PLS = pls,
+  MARS = mars
+)))
+```
+Looking at both RMSE and MAE, Elastic Net performed the best among all.
+
+2. Apply model interpretation methods to each model. That is, for each model (the final tuned version), generate permutation-based feature importance plots, PDPs/ICE plots for the five most important variables, and feature interaction plots. Interpret the results with written analysis.
+```{r}
+pred_lr = Predictor$new( model = lr, data = select(gss_train, -egalit_scale), y = gss_train$egalit_scale)
+pred_net = Predictor$new(model = ela.net,data = select(gss_train, -egalit_scale),y = gss_train$egalit_scale)
+pred_pcr = Predictor$new(model = pcr,data = select(gss_train, -egalit_scale),y = gss_train$egalit_scale)
+pred_pls = Predictor$new(model = pls,data = select(gss_train, -egalit_scale),y = gss_train$egalit_scale)
+pred_mars = Predictor$new(model = mars,data = select(gss_train, -egalit_scale),y = gss_train$egalit_scale)
+```
+
+```{r}
+# Feature Importance
+imp_lr = FeatureImp$new(pred_lr, loss = "mse")
+imp_net = FeatureImp$new(pred_net, loss = "mse")
+imp_pcr = FeatureImp$new(pred_pcr, loss = "mse")
+imp_pls = FeatureImp$new(pred_pls, loss = "mse")
+imp_mars = FeatureImp$new(pred_mars, loss = "mse")
+
+img1 = plot(imp_lr) + ggtitle("Linear Regression")
+img2 = plot(imp_pcr) + ggtitle("PCR")
+img3 = plot(imp_pls) + ggtitle("PLS")
+img4 = plot(imp_net) + ggtitle("Elastic net")
+img5 = plot(imp_mars) + ggtitle("MARS")
+```
+
+```{r}
+img1
+head(imp_lr$results, 5)
+```
+```{r}
+img2
+head(imp_net$results, 5)
+```
+```{r}
+img3
+head(imp_pcr$results, 5)
+```
+```{r}
+img4
+head(imp_pls$results, 5)
+```
+```{r}
+img5
+head(imp_mars$results, 5)
+```
+
+In general, we can find that polviews, pres08 are the most important two features for all of these five model settings; other important features include: partyid_3, age and income06. I will draw PDP on these variables
+```{r}
+preds = tibble(name = c("Linear Regression", "PCR", "PLS", "Elastic Net", "MARS"),
+  models = list(Linear.Regression = pred_lr,
+                Elastic.net = pred_net,
+                PCR = pred_pcr, 
+                PLS = pred_pls,
+                MARS = pred_mars
+))
+
+predictors_pdp <- preds %>%
+mutate(
+  polviews = map2(models, name, ~ FeatureEffect$new(.x, "polviews", method = "pdp+ice") %>%
+  plot() + ggtitle(.y)), 
+  pres08 = map2(models, name, ~ FeatureEffect$new(.x, "pres08", method = "pdp+ice") %>%
+  plot() + ggtitle(.y)), 
+  partyid_3 = map2(models, name, ~ FeatureEffect$new(.x, "partyid_3",method = "pdp+ice") %>%
+  plot() + ggtitle(.y)), 
+  age = map2(models, name, ~ FeatureEffect$new(.x, "age", method = "pdp+ice", center.at = min(gss_train$age),grid.size = 50) %>%
+  plot() + ggtitle(.y)),
+  inc06 = map2(models, name, ~ FeatureEffect$new(.x, "income06", method = "pdp+ice", center.at = min(gss_train$income06), grid.size = 50) %>%
+  plot() + ggtitle(.y))
+)
+```
+```{r}
+predictors_pdp$polviews
+```
+```{r}
+predictors_pdp$pres08
+```
+```{r}
+predictors_pdp$partyid_3
+```
+```{r}
+predictors_pdp$inc06
+```
+```{r}
+predictors_pdp$age
+``` 
+
+From these PDPs, we can find that:
+* In general, the more liberal the interviewees are, the more egalitarianism they hold.
+* Those who voted for Obama are more prone to be ealitarian.
+* Democrats favor more egalitarianism.
+* In general, the more income people earn, the less egalitarian they are.
+* In general, the older people get, the less egalitarian they are.
+```{r}
+# Linear Regression feature interaction
+lr_int = Interaction$new(pred_lr)
+lr_int_score = lr_int$results
+plot(lr_int) + ggtitle("Linear Regression")
+lr_int_score %>% arrange(-.interaction) %>% head(5)
+```
+
+```{r}
+# Elastic Net feature interaction
+net_int = Interaction$new(pred_net)
+net_int_score = net_int$results
+plot(net_int) + ggtitle("Elastic Net")
+net_int_score %>% arrange(-.interaction) %>% head(5)
+```
+
+```{r}
+# PCR feature interaction
+pcr_int = Interaction$new(pred_pcr)
+pcr_int_score = pcr_int$results
+plot(pcr_int) + ggtitle("PCR")
+pcr_int_score %>% arrange(-.interaction) %>% head(5)
+```
+
+```{r}
+# PLS feature interaction
+pls_int = Interaction$new(pred_pls)
+pls_int_score = pls_int$results
+plot(pls_int) + ggtitle("PLS")
+pls_int_score %>% arrange(-.interaction) %>% head(5)
+```
+
+```{r}
+# MARS feature interaction
+mars_int = Interaction$new(pred_mars)
+mars_int_score = mars_int$results
+plot(mars_int) + ggtitle("MARS")
+mars_int_score %>% arrange(-.interaction) %>% head(5)
+```
+
+3. Take the optimal model, apply the test set to the model, and calculate the test set MSE. Does this model generalize well to the test set?
+```{r}
+# I will go on with the Elastic Net model
+predicts = predict(ela.net, gss_test)
+y_true = gss_test$egalit_scale
+mse = sum((y_true - predicts)^2)/length(y_true)
+sqrt(mse)
+```
+
+Generally, the model generalized well to the test set. In the training process, the average CV RMSE is around 7.72, and it does not inflate very much on the test set.
